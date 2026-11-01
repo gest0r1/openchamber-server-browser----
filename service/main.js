@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -3639,6 +3640,114 @@ var require_websocket_server = __commonJS({
   }
 });
 
+// src/project-browsers.js
+// One persistent Chrome profile and network-policy proxy per Git project.
+// Each OpenCode chat still owns a separate browser runtime and its own tabs.
+
+var projectIdFor = (directory) => {
+  if (typeof directory !== 'string' || !path.isAbsolute(directory)) {
+    throw new Error('Browser project requires an absolute directory');
+  }
+  // Canonicalize worktrees to their common Git directory. A normal folder
+  // uses its real path. We do not use an agent-supplied project ID.
+  const real = fs.realpathSync(directory);
+  let identity = real;
+  try {
+    const gitDir = execFileSync('git',
+      ['-C', real, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+      { encoding: 'utf8', timeout: 1500, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    identity = fs.realpathSync(gitDir);
+  } catch {
+    // Non-Git projects work as well.
+  }
+  return crypto.createHash('sha256').update(identity).digest('hex');
+};
+
+var createProjectBrowsers = ({
+  chromePath = null,
+  profileRoot = path.join(os.homedir(), '.local', 'share', 'openchamber-server-browser', 'profiles'),
+  allowedOrigins = [],
+  allowedNetworks = [],
+  configPath = null,
+  devServers = null,
+  resolveProject = projectIdFor,
+} = {}) => {
+  const projects = new Map();
+  const grants = [...originGrants(allowedOrigins), ...networkGrants(allowedNetworks)];
+  const acquire = (context) => {
+    const id = resolveProject(context.directory);
+    let entry = projects.get(id);
+    if (!entry) {
+      const proxy = createPolicyProxy({
+        grants, configPath,
+        devServerGrants: devServers ? () => devServers.grants() : null,
+      });
+      const owners = new Map();
+      const profileDir = path.join(profileRoot, id);
+      let chrome = null;
+      let pending = null;
+      entry = {
+        id, proxy, owners, profileDir, refs: 0,
+        async ensure() {
+          if (!pending) {
+            pending = (async () => {
+              const proxyAddress = await proxy.listen();
+              chrome = createChromeProcess({
+                chromePath, profileDir,
+                proxyServer: proxyAddress,
+              });
+              chrome.onExit((detail) => {
+                for (const listener of entry.exitListeners) listener(detail);
+              });
+              return chrome.ensure();
+            })();
+          }
+          return pending;
+        },
+        onExit(listener) {
+          // Installed before first action, when Chrome has not started yet.
+          const callbacks = entry.exitListeners;
+          callbacks.add(listener);
+          return () => callbacks.delete(listener);
+        },
+        exitListeners: new Set(),
+        claim(targetId, scopeId) { owners.set(targetId, scopeId); },
+        owner(targetId) { return owners.get(targetId); },
+        forget(targetId, scopeId) {
+          if (owners.get(targetId) === scopeId) owners.delete(targetId);
+        },
+        async shutdown() {
+          // The browser's disk profile is never deleted on a normal shutdown.
+          await chrome?.close();
+          await proxy.close();
+          owners.clear();
+        },
+      };
+      projects.set(id, entry);
+    }
+    entry.refs += 1;
+    let released = false;
+    return {
+      id,
+      ensure: () => entry.ensure(),
+      claim: (targetId, scopeId) => entry.claim(targetId, scopeId),
+      owner: (targetId) => entry.owner(targetId),
+      forget: (targetId, scopeId) => entry.forget(targetId, scopeId),
+      onExit: (listener) => entry.onExit(listener),
+      async release() {
+        if (released) return;
+        released = true;
+        entry.refs -= 1;
+        if (entry.refs === 0) {
+          projects.delete(id);
+          await entry.shutdown();
+        }
+      },
+    };
+  };
+  return { acquire, get size() { return projects.size; } };
+};
+
 // src/main.js
 import path3 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
@@ -5707,7 +5816,7 @@ var probeVersion = async (endpoint) => {
     cdp.close();
   }
 };
-var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3 } = {}) => {
+var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3, profileDir: persistentProfileDir = null, proxyServer = null } = {}) => {
   let launchPromise = null;
   let child = null;
   let profileDir = null;
@@ -5718,7 +5827,7 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3 } = {}) 
     if (!profileDir) return;
     const directory = profileDir;
     profileDir = null;
-    await fs.promises.rm(directory, { recursive: true, force: true });
+    if (!persistentProfileDir) await fs.promises.rm(directory, { recursive: true, force: true });
   };
   const killChild = () => {
     if (!child || child.exitCode !== null || child.signalCode !== null) return;
@@ -5739,8 +5848,18 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3 } = {}) 
   };
   const launch = async () => {
     const binary = resolveChromePath(chromePath);
-    profileDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "openchamber-server-browser-"));
-    await fs.promises.chmod(profileDir, 448);
+    if (persistentProfileDir) {
+      profileDir = path.resolve(persistentProfileDir);
+      await fs.promises.mkdir(profileDir, { recursive: true, mode: 448 });
+      const stat = await fs.promises.lstat(profileDir);
+      if (!stat.isDirectory() || stat.isSymbolicLink() || (process.getuid && stat.uid !== process.getuid())) {
+        throw new Error("Unsafe persistent Chrome profile directory");
+      }
+      await fs.promises.chmod(profileDir, 448);
+    } else {
+      profileDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "openchamber-server-browser-"));
+      await fs.promises.chmod(profileDir, 448);
+    }
     const userAgent = await userAgentArgs(binary);
     if (closed) throw new Error("Chrome launch was cancelled");
     child = spawn(binary, [
@@ -5752,6 +5871,7 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3 } = {}) 
       "--remote-debugging-port=0",
       "--remote-debugging-address=127.0.0.1",
       `--user-data-dir=${profileDir}`,
+      ...(proxyServer ? [`--proxy-server=http://${proxyServer}`, "--proxy-bypass-list=<-loopback>"] : []),
       "--no-first-run",
       "--no-default-browser-check",
       "--disable-background-networking",
@@ -5810,6 +5930,23 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3 } = {}) 
       closed = true;
       const processToWait = child;
       const exited = waitForExit(processToWait);
+      if (persistentProfileDir && result?.endpoint && processToWait) {
+        let control;
+        try {
+          control = await connectCdp(result.endpoint, { commandTimeoutMs: 1500, handshakeTimeoutMs: 1500 });
+          await Promise.race([
+            control.send("Browser.close").catch(() => {}),
+            new Promise((resolve) => setTimeout(resolve, 1500))
+          ]);
+          await Promise.race([
+            exited,
+            new Promise((resolve) => setTimeout(resolve, 1500))
+          ]);
+        } catch {
+        } finally {
+          control?.close();
+        }
+      }
       killChild();
       await launchPromise?.catch(() => {
       });
@@ -6436,6 +6573,10 @@ var parseConfig = (value) => {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("config.json must contain an object");
   }
+  const profileRoot = value.profileRoot;
+  if (profileRoot !== void 0 && (typeof profileRoot !== "string" || !path2.isAbsolute(profileRoot) || !profileRoot.trim())) {
+    throw new Error("config.profileRoot must be an absolute path when provided");
+  }
   const chromePath = value.chromePath;
   if (chromePath !== void 0 && (typeof chromePath !== "string" || chromePath.trim().length === 0)) {
     throw new Error("config.chromePath must be a non-empty string when provided");
@@ -6452,6 +6593,7 @@ var parseConfig = (value) => {
   const allowedOrigins = (value.allowedOrigins ?? []).map(parseAllowedOrigin);
   return Object.freeze({
     chromePath: chromePath?.trim() ?? null,
+    profileRoot: profileRoot ?? void 0,
     allowedOrigins: Object.freeze([...new Set(allowedOrigins)]),
     allowedNetworks: Object.freeze((value.allowedNetworks ?? []).map(parseAllowedNetwork)),
     discoverDevServers: value.discoverDevServers === true
@@ -6918,10 +7060,12 @@ var createBrowserRuntime = ({
   allowedOrigins = [],
   allowedNetworks = [],
   configPath = null,
-  devServers = null
+  devServers = null,
+  sharedProject = null,
+  scopeId: chatScopeId = null
 } = {}) => {
-  const chrome = createChromeProcess({ chromePath });
-  const proxy = createPolicyProxy({
+  const chrome = sharedProject ? null : createChromeProcess({ chromePath });
+  const proxy = sharedProject ? null : createPolicyProxy({
     grants: [...originGrants(allowedOrigins), ...networkGrants(allowedNetworks)],
     configPath,
     devServerGrants: devServers ? () => devServers.grants() : null
@@ -6958,7 +7102,7 @@ var createBrowserRuntime = ({
     shutdownController.abort(dead);
     for (const listener of deathListeners) listener(dead);
   };
-  chrome.onExit(markDead);
+  const unsubscribeExit = sharedProject ? sharedProject.onExit(markDead) : chrome.onExit(markDead);
   const activeTab = () => tabs.get(activeTargetId) ?? null;
   const runtime = {
     get viewport() {
@@ -7078,6 +7222,7 @@ var createBrowserRuntime = ({
     const current = tabs.get(targetId);
     if (!current) return;
     tabs.delete(targetId);
+    if (sharedProject) sharedProject.forget(targetId, chatScopeId);
     agentTargets.delete(targetId);
     sessions.delete(current.sessionId);
     clearTimeout(current.navigationTimer);
@@ -7125,7 +7270,11 @@ var createBrowserRuntime = ({
   };
   const handleTargetEvent = (event) => {
     const info = event.params.targetInfo;
-    if (event.method === "Target.targetCreated" && isScopePage(info, contextId)) {
+    if (event.method === "Target.targetCreated" && info?.type === "page" && info.subtype !== "prerender"
+      && (sharedProject
+        ? (sharedProject.owner(info.targetId) === chatScopeId || (info.openerId && sharedProject.owner(info.openerId) === chatScopeId))
+        : isScopePage(info, contextId))) {
+      if (sharedProject) sharedProject.claim(info.targetId, chatScopeId);
       void attachTab(info.targetId, info.openerId ?? null).then(async (current) => {
         await targetCreation;
         return backgroundTargets.delete(current.targetId) ? current : activate(current);
@@ -7194,15 +7343,19 @@ var createBrowserRuntime = ({
     let nextCdp = null;
     let nextContextId = null;
     try {
-      const [proxyAddress, processInfo] = await Promise.all([proxy.listen(), chrome.ensure()]);
+      const [proxyAddress, processInfo] = sharedProject
+        ? [null, await sharedProject.ensure()]
+        : await Promise.all([proxy.listen(), chrome.ensure()]);
       if (closed) throw new Error("Browser runtime is closed");
       nextCdp = await connectCdp(processInfo.endpoint);
-      const context = await nextCdp.send("Target.createBrowserContext", {
-        proxyServer: proxyAddress,
-        proxyBypassList: "<-loopback>"
-      });
-      if (typeof context.browserContextId !== "string") throw new Error("Chrome returned no browser context id");
-      nextContextId = context.browserContextId;
+      if (!sharedProject) {
+        const context = await nextCdp.send("Target.createBrowserContext", {
+          proxyServer: proxyAddress,
+          proxyBypassList: "<-loopback>"
+        });
+        if (typeof context.browserContextId !== "string") throw new Error("Chrome returned no browser context id");
+        nextContextId = context.browserContextId;
+      }
       if (closed) throw new Error("Browser runtime is closed");
       cdp = nextCdp;
       contextId = nextContextId;
@@ -7221,7 +7374,7 @@ var createBrowserRuntime = ({
   const ensureStarted = async () => {
     if (closed) throw new Error("Browser runtime is closed");
     if (dead) throw dead;
-    if (cdp?.isOpen && contextId) return;
+    if (cdp?.isOpen && (sharedProject || contextId)) return;
     if (!startupPromise) startupPromise = start().catch((error) => {
       startupPromise = null;
       throw error;
@@ -7230,8 +7383,11 @@ var createBrowserRuntime = ({
   };
   const openTab = async ({ background = false } = {}) => {
     await ensureStarted();
-    const creation = cdp.send("Target.createTarget", { url: "about:blank", browserContextId: contextId, newWindow: true, background }).then((target) => {
+    const creation = cdp.send("Target.createTarget", {
+      url: "about:blank", ...(sharedProject ? {} : { browserContextId: contextId }), newWindow: true, background
+    }).then((target) => {
       if (typeof target.targetId !== "string") throw new Error("Chrome returned no page target id");
+      if (sharedProject) sharedProject.claim(target.targetId, chatScopeId);
       if (background) backgroundTargets.add(target.targetId);
       return target;
     });
@@ -7427,7 +7583,13 @@ var createBrowserRuntime = ({
     if (closed) return;
     closed = true;
     shutdownController.abort(new DOMException("Browser runtime stopped", "AbortError"));
-    await chrome.close();
+    if (sharedProject) {
+      await Promise.allSettled([...tabs.keys()].map((targetId) =>
+        cdp?.isOpen ? cdp.send("Target.closeTarget", { targetId }) : Promise.resolve()));
+      for (const targetId of tabs.keys()) sharedProject.forget(targetId, chatScopeId);
+    } else {
+      await chrome.close();
+    }
     cdp?.close();
     await surface.close();
     inspector.close();
@@ -7437,7 +7599,12 @@ var createBrowserRuntime = ({
     });
     eventCleanup?.();
     for (const current of tabs.values()) clearTimeout(current.navigationTimer);
-    await proxy.close();
+    if (sharedProject) {
+      unsubscribeExit();
+      await sharedProject.release();
+    } else {
+      await proxy.close();
+    }
     contextId = null;
     tabs.clear();
     sessions.clear();
@@ -8040,8 +8207,13 @@ var startService = async ({
   }
   const config = loadConfig({ entryUrl: import.meta.url, configPath });
   const devServers = config.discoverDevServers ? createDevServerScanner() : null;
+  const projects = runtime ? null : createProjectBrowsers({ ...config, devServers });
   const browserRuntime = runtime ?? createBrowserManager({
-    createRuntime: () => createBrowserRuntime({ ...config, devServers })
+    createRuntime: (context) => createBrowserRuntime({
+      ...config,
+      sharedProject: projects.acquire(context),
+      scopeId: JSON.stringify([context.directory, context.sessionId])
+    })
   });
   const service = createService({
     runtime: browserRuntime,
