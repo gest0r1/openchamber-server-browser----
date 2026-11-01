@@ -3,6 +3,5 @@
     "http://127.0.0.1:3000",
     "http://localhost:3000"
   ],
-  "discoverDevServers": false,
-  "profileRoot": "/home/opencode/.local/share/openchamber-server-browser/profiles"
+  "discoverDevServers": false
 }
