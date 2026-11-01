@@ -152,6 +152,28 @@ export const createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15_0
       profileDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'openchamber-server-browser-'));
       await fs.promises.chmod(profileDir, 0o700);
     }
+    // Persistent Chrome profiles can contain a DevToolsActivePort left behind
+    // by an abruptly stopped browser. It MUST NOT be mistaken for the endpoint
+    // of the Chrome we are about to launch.
+    const activePortPath = path.join(profileDir, 'DevToolsActivePort');
+    if (persistentProfileDir) {
+      let oldEndpoint = null;
+      try { oldEndpoint = parseEndpoint(await fs.promises.readFile(activePortPath, 'utf8')); } catch {}
+      if (oldEndpoint) {
+        let activeCdp = null;
+        try {
+          activeCdp = await connectCdp(oldEndpoint, { handshakeTimeoutMs: 1200 });
+        } catch {
+          // An unreachable endpoint is stale; Chrome itself still enforces
+          // single-instance profile locking when another instance is starting.
+        }
+        if (activeCdp) {
+          activeCdp.close();
+          throw new Error('Chrome profile is already in use by another browser process');
+        }
+      }
+      await fs.promises.rm(activePortPath, { force: true });
+    }
     const userAgent = await userAgentArgs(binary);
     if (closed) throw new Error('Chrome launch was cancelled');
     child = spawn(binary, [
@@ -181,12 +203,16 @@ export const createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15_0
     child.once('error', (error) => { exitError = new Error(`Chrome failed to spawn: ${error.message}`); });
     child.once('exit', (code, signal) => {
       if (closed) return;
-      if (!result) exitError = new Error(`Chrome exited during startup (code ${code ?? 'null'}, signal ${signal ?? 'none'})`);
-      else for (const listener of exitListeners) listener({ code, signal });
+      if (!result) {
+        exitError = new Error(`Chrome exited during startup (code ${code ?? 'null'}, signal ${signal ?? 'none'})`);
+      } else {
+        result = null;
+        launchPromise = null;
+        for (const listener of exitListeners) listener({ code, signal });
+      }
     });
 
     const deadline = Date.now() + startupTimeoutMs;
-    const activePortPath = path.join(profileDir, 'DevToolsActivePort');
     let endpoint = null;
     while (!endpoint && Date.now() < deadline) {
       if (closed) throw new Error('Chrome launch was cancelled');
@@ -210,6 +236,10 @@ export const createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15_0
       if (!launchPromise) {
         launchPromise = launch().catch(async (error) => {
           killChild();
+          // A failed launch must not pin a rejected promise forever: a later
+          // browser action can retry without restarting the OpenChamber host.
+          launchPromise = null;
+          result = null;
           await removeProfile();
           throw error;
         });
