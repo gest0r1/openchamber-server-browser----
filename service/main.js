@@ -5948,6 +5948,9 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3, profile
     if (!endpoint) throw new Error("Timed out waiting for Chrome DevTools readiness");
     const version = await probeVersion(endpoint);
     if (closed) throw new Error("Chrome launch was cancelled");
+    if (exitError || child.exitCode !== null || child.signalCode) {
+      throw exitError ?? new Error("Chrome exited before startup finished");
+    }
     result = { endpoint, version, process: child, profileDir };
     return result;
   };
