@@ -27,10 +27,19 @@ The extension includes its built service. Installing it in OpenChamber does not 
 
 ## Install
 
-1. Disable the original Server Browser provider before testing this fork. Install the fork from `https://github.com/gest0r1/openchamber-server-browser----` (select the `feature/persistent-project-profiles` branch if the extension installer supports a branch; otherwise use a local checkout of that branch).
-2. Review and approve its service permission. The service launches Chrome on the OpenChamber host.
-3. Select **Server Browser** under **Settings → General → OpenChamber Tools → Browser provider**.
-4. In a chat, ask the agent to open a page with the `openchamber_web` tool. Open **Server Browser** from the panel rail to view that same page.
+1. In OpenChamber, open **Settings → Extensions → Add** and enter the Git URL **including the branch ref**:
+
+   ```text
+   https://github.com/gest0r1/openchamber-server-browser----.git#feature/persistent-project-profiles
+   ```
+
+   OpenChamber-RU supports `#branch`/ `#tag` for Git installation sources. It clones the selected ref **on the OpenChamber host automatically**. No manual clone, ZIP, `npm install`, or build is needed; the committed `service/main.js` and `panel/*.js` are the distributable.
+2. If the original Server Browser is installed, select **Replace/reinstall** when prompted for the duplicate extension ID. To revert, reinstall the original extension from its Git URL.
+3. Review and approve service permissions, including the Git executable used to identify Git worktrees.
+4. Select **Server Browser** in **Settings → General → OpenChamber Tools → Browser provider**.
+5. In a chat, ask the agent to open a page with `openchamber_web`. Open **Server Browser** from the panel rail, log in manually, then hand control back to the agent.
+
+**Important:** the branch must be explicit until the feature is merged into `main`. Installing `https://github.com/gest0r1/openchamber-server-browser----.git` without `#feature/persistent-project-profiles` currently installs the unmodified upstream fork. Subsequent OpenChamber extension updates use the saved branch ref. Authentication profiles stay outside the installed extension and are not removed by normal updates.
 
 Updating from 0.7.x: an agent action without a tab id now uses the tab the agent last used, not the tab selected in the dock, so switching tabs in the dock no longer moves the agent. It uses the dock's tab only while the agent has no tab of its own.
 
