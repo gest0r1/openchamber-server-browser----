@@ -221,6 +221,25 @@ export const createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15_0
       closed = true;
       const processToWait = child;
       const exited = waitForExit(processToWait);
+      if (persistentProfileDir && result?.endpoint && processToWait) {
+        // Give Chrome time to flush its persistent cookies and storage.
+        let control;
+        try {
+          control = await connectCdp(result.endpoint, { commandTimeoutMs: 1500, handshakeTimeoutMs: 1500 });
+          await Promise.race([
+            control.send('Browser.close').catch(() => {}),
+            new Promise((resolve) => setTimeout(resolve, 1500)),
+          ]);
+          await Promise.race([
+            exited,
+            new Promise((resolve) => setTimeout(resolve, 1500)),
+          ]);
+        } catch {
+          // Unresponsive Chrome still has to be terminated within the host deadline.
+        } finally {
+          control?.close();
+        }
+      }
       killChild();
       await launchPromise?.catch(() => {});
       await exited;
