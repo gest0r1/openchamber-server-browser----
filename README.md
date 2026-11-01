@@ -1,207 +1,91 @@
-# Server Browser for OpenChamber — persistent project profiles (testing branch)
+# Server Browser for OpenChamber
 
-This fork implements durable, per-project browser sign-in. Version 0.9.0-dev.2 fixes stale Chrome DevTools ports left by interrupted runs and allows a later browser action to recover from failed Chrome startup without restarting OpenChamber. Real-world login flows still require manual validation.
+[Русская документация](README.ru.md)
 
-Run Chrome on the OpenChamber server. Agents drive it with the `browser.*` actions of OpenChamber's `openchamber_web` tool, and you can open the Server Browser panel to see and control the same page, including its current form values, cookies, and navigation state.
+**Version:** `0.9.0-dev.2` · **Status:** experimental; manual authentication and host-level recovery are not yet fully verified.
 
-This is the extension extraction of [OpenChamber PR #3425](https://github.com/openchamber/openchamber/pull/3425). It uses the browser-provider and shared-surface contracts added in [#3734](https://github.com/openchamber/openchamber/pull/3734).
+Server-side Chrome for OpenChamber. Agents use the `openchamber_web` tool; a person can view the **same browser page** in the Server Browser panel, sign in, and hand control back. Chrome runs on the OpenChamber **server**, independently of a Windows desktop client.
 
-## Status and goal
+This fork adds **persistent authentication per project**, rather than the temporary per-chat profiles in the [original extension](https://github.com/JosueGalRe/openchamber-server-browser). It builds on the original extension's browser-provider and shared-surface implementation, with attribution in [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
-**Experimental. This extension does not yet replace the original Server Browser implementation.** Version 0.8.2 types the dot of an email address and other punctuation that the viewer's keyboard used to drop. Version 0.8.1 brings the Google sign-in fix of 0.7.1 to Windows. Version 0.8.0 adopts what OpenChamber 2.5 added for browser providers: agents close the tabs they opened and pick options in native selects, `browser.open` waits until the page stops changing, and an action without a tab id uses the agent's last tab, as OpenChamber's tool tells agents. Version 0.7.1 lets you sign in to Google in the shared browser, which Google refused while Chrome said it was headless. Version 0.7.0 adopts the contracts OpenChamber 2.0.1 added: agents name the tab they act on, the viewer in control can use the dock while other viewers watch, input made on an image of an earlier view is refused, and the dock grows to list the page's errors and warnings. Version 0.6.0 ported most of the remaining viewer, tab, lifecycle, and inspection features of PR #3425: text entry and shortcuts, dragging, copying, a page context menu, page tabs and popups, live loading state with a stop button, a viewport picker, idle scope expiry, crash recovery, a browser for the chat you are viewing, a console and network inspector, and opt-in development-server discovery. It keeps the blocked-address page and `allowedNetworks` from 0.5.0, the native-select compatibility mode from 0.3.0, and project/chat isolation from 0.2.0. Embedded DevTools and other runtimes remain open.
+## Requirements and installation
 
-The goal is functional parity with the Server Browser in PR #3425 through OpenChamber's official extension APIs. The reference for this extraction is [commit 362dbc3f305615200d762b721106c64e796b095b](https://github.com/JosueGalRe/openchamber/tree/362dbc3f305615200d762b721106c64e796b095b/packages/web/server/lib/browser). It is a feature reference, not a claim that every original runtime or platform was validated.
+- OpenChamber **2.0.1+**, with the Server Browser extension API (some agent actions require OpenChamber 2.5+).
+- Google Chrome or Chromium **109+** on the **OpenChamber host**.
+- A host service runtime supporting **Node.js 22+** for development. Git is used for identifying common repositories/worktrees.
+- An approved extension service permission. Headless Chrome does not require a local monitor or Windows client.
 
-Parity means the agent and person can work in the exact same server-owned browser target, preserving cookies, authentication, form values, and navigation state during handoff. It also means recovering the original tab management, scoped sessions, debugging tools, local-server workflow, and interaction controls. Showing the same URL in a separate browser does not meet that goal.
+In **Settings → Extensions → Add**, paste:
 
-The original implementation remains the functional reference until those gaps are closed and tested. The roadmap below describes intended work, not shipped features or a release-date commitment.
+```text
+https://github.com/gest0r1/openchamber-server-browser----.git
+```
 
-## Requirements
+This installs the repository's default **`main`** branch directly from GitHub. OpenChamber downloads the source and starts the **prebuilt** `service/main.js`; manual cloning and building are unnecessary. If the original Server Browser is already installed, choose **Replace/Reinstall** for the same extension ID and review any newly requested permissions (including `git`). Then select **Server Browser** in **Settings → General → OpenChamber Tools → Browser provider**.
 
-- OpenChamber 2.0.1 or newer. The manifest declares `openchamber.engines.openchamber: >=2.0.1`, so older hosts refuse to install or update it. 0.7.0 cannot work on 2.0.0: agents there cannot name a tab, so a page they open in a background tab would be out of their reach.
-- Chrome or Chromium 109 or newer installed on the machine running OpenChamber.
-- A supported host service runtime. Development uses Node.js 22 or newer and Bun for installing locked dependencies.
-- For development-server discovery only: Linux, which uses `lsof` when installed and `/proc` otherwise, or macOS with `lsof`. On other systems discovery allows nothing.
+For testing a non-default branch, append `#branch-name` to the `.git` URL. Git-installed extension updates track the selected ref and compare the version in `package.json`. A browser-provider service starts on demand; normally neither a Windows client nor the OpenChamber host needs restarting after installation.
 
-The extension includes its built service. Installing it in OpenChamber does not require installing this repository's development dependencies.
+## First login and agent workflow
 
-## Install
+1. Open the intended **project and chat** in OpenChamber.
+2. Ask the agent: “Use `openchamber_web` with `browser.open` to open https://example.com and stop. I will sign in manually.”
+3. The **Server Browser** panel shows the server-side page. Click/type inside the panel to take control, sign in, then select **Hand back to agent**. The host refuses agent actions while you hold control.
+4. Open a **new chat within the same project** and visit the same site with `openchamber_web`. Cookies and LocalStorage are shared with the first chat.
+5. Switch to a different project to check that the browser session is separate.
 
-1. In OpenChamber, open **Settings → Extensions → Add** and enter the Git URL **including the branch ref**:
+Opening the panel alone does **not** start Chrome. The panel offers **Open for this chat** when it receives a valid current project directory and session ID; otherwise the first agent browser action starts it. The address bar and controls stay disabled until a scope exists. OpenCode desktop's built-in `browser.*` tools are different; on a web host, agents must use `openchamber_web`.
 
-   ```text
-   https://github.com/gest0r1/openchamber-server-browser----.git#feature/persistent-project-profiles
-   ```
+A site may still require login again when its cookies expire or it stores authentication only in SessionStorage, revokes tokens server-side, or has SSO/2FA requirements. Persistent profiles cannot bypass the site's authentication policy.
 
-   OpenChamber-RU supports `#branch`/ `#tag` for Git installation sources. It clones the selected ref **on the OpenChamber host automatically**. No manual clone, ZIP, `npm install`, or build is needed; the committed `service/main.js` and `panel/*.js` are the distributable.
-2. If the original Server Browser is installed, select **Replace/reinstall** when prompted for the duplicate extension ID. To revert, reinstall the original extension from its Git URL.
-3. Review and approve service permissions, including the Git executable used to identify Git worktrees.
-4. Select **Server Browser** in **Settings → General → OpenChamber Tools → Browser provider**.
-5. In a chat, ask the agent to open a page with `openchamber_web`. Open **Server Browser** from the panel rail, log in manually, then hand control back to the agent.
+## Project profiles and lifecycle
 
-**Important:** the branch must be explicit until the feature is merged into `main`. Installing `https://github.com/gest0r1/openchamber-server-browser----.git` without `#feature/persistent-project-profiles` currently installs the unmodified upstream fork. Subsequent OpenChamber extension updates use the saved branch ref. Authentication profiles stay outside the installed extension and are not removed by normal updates.
+- **Git repository:** project identity is derived from the canonical **common Git directory**. All worktrees of that repository share **one profile**.
+- **Non-Git directory:** identity is derived from its canonical absolute path. Moving or renaming a directory may create a different identity.
+- **Different projects:** independent Chrome processes, profiles, cookies, LocalStorage, and target ownership.
+- **Different chats in one project:** share Chrome authentication but own **separate tabs**. One chat is not allowed to act on another chat's target through the extension API.
+- **Storage:** `~/.local/share/openchamber-server-browser/profiles/<sha256-project-id>/` by default (resolved from the server user's home). The profile directory is mode `0700`, is **not** placed in Git, and is preserved when Chrome or the extension stops normally.
+- **Scope limits:** at most four live chat scopes; an idle scope closes after five minutes. A scope may be evicted to make room once inactive long enough. An unattended host-managed provider service can also be stopped by OpenChamber. These events close tabs and Chrome, **not** the persistent profile.
+- **Restart:** a later request launches Chrome with the saved project profile. Open tabs, temporary JS state, transient SessionStorage, and history are **not** guaranteed to be restored.
 
-Updating from 0.7.x: an agent action without a tab id now uses the tab the agent last used, not the tab selected in the dock, so switching tabs in the dock no longer moves the agent. It uses the dock's tab only while the agent has no tab of its own.
+`0.9.0-dev.2` clears a stale Chrome `DevToolsActivePort` before launching a new process, rejects a profile already used by a live Chrome, clears failed startup state, and attempts a fresh Chrome start after an unexpected exit. The *next browser action* starts recovery; an interrupted action is **not** automatically replayed. Diagnostic logs include the Chrome exit code/signal without profile data.
 
-Updating from 0.6.x: `browser.open` without a tab id now opens the page in a background tab, unless the visible tab is still blank, so the page you are watching is never replaced. The dock lists the new page as a tab; select it to watch. The agent receives its id and names it in later actions. Version 0.7.0 needs OpenChamber 2.0.1, so update OpenChamber first; a 2.0.0 host refuses the update.
+## Configuration and local-network security
 
-Updating from 0.5.x: version 0.6.0 adds `lsof` and `ps` to the service's declared executables for development-server discovery. OpenChamber withdraws a service approval when an update declares new permissions, so approve the service again after updating. Discovery stays off unless you enable it. Origin grants now match only the host name they list, so `http://127.0.0.1:3000` no longer allows `http://myapp.test:3000` when that name resolves to 127.0.0.1; list each name you use.
-
-The service starts on the first browser action, even if no panel is open. Interacting with the panel takes control from the agent. Use the panel's release control action to hand the page back. OpenChamber owns this control handoff and rejects agent actions while you hold control.
-
-Opening the panel alone does not start a browser. Each browser belongs to a project/chat pair: the dock offers **Open for this chat** for the chat you are viewing, and otherwise the chat's first agent action starts it. Until then the dock explains this and keeps its toolbar disabled. OpenCode 2 also gives agents its own `browser.*` tools, such as `browser.tabs.open`, for its desktop app. Those calls never reach this extension and fail with `browser.disconnected` on a web host; ask the agent to use `openchamber_web` instead.
-
-## Local development servers
-
-Private and loopback destinations are blocked unless you explicitly allow them. Copy `config.example.json` to `config.json` in the installed extension directory and list the exact origins you need:
+The extension loads an optional `config.json` located in its installation directory (copy `config.example.json`). This file may need to be backed up when replacing the installed extension. Restart **the extension service** after editing the configuration.
 
 ```json
 {
-  "allowedOrigins": [
-    "http://127.0.0.1:3000",
-    "http://localhost:3000"
-  ]
+  "profileRoot": "/home/opencode/.local/share/openchamber-server-browser/profiles",
+  "allowedOrigins": ["http://127.0.0.1:3000", "http://localhost:3000"],
+  "allowedNetworks": [{ "cidr": "192.168.1.0/24", "ports": [3000, "5173-5199"] }],
+  "discoverDevServers": false
 }
 ```
 
-For several machines or many ports, list a private IPv4 block in `allowedNetworks` with the ports it may use. Ports are required, and a `"first-last"` string covers a range. A block applies to HTTP, HTTPS, and WebSocket traffic, and it must be private or loopback and no broader than /8:
+`profileRoot` must be an **absolute server path**; omit it to use the default. `allowedOrigins` grants exact host/port origins. `allowedNetworks` permits narrowly scoped private IPv4 blocks and ports. Internal and loopback addresses are **blocked by default**; do not casually permit metadata, administrative or unrelated service ports. `discoverDevServers: true` discovers eligible active loopback development listeners, but widens the attack surface; keep it **false** unless necessary. The allowlist proxy is attached to each **project Chrome process**, not a temporary incognito context.
 
-```json
-{
-  "allowedNetworks": [
-    { "cidr": "192.168.1.0/24", "ports": [3000, "5173-5199", 8080] }
-  ]
-}
-```
+**Security boundary:** Chrome profiles hold authentication material. Protect server access, filesystem backups, and the account running OpenChamber. Project separation is at the browser profile/extension API layer, **not an OS-level sandbox** against malicious code running as the same user. Never commit `config.json` with secrets or the profile directory. To revoke a saved login, log out on the website; for complete local deletion, stop the extension service and remove only that project's profile directory after confirming its identity.
 
-A block matches the address a name resolves to, so it also allows any domain that resolves into it on a listed port, including one a web page rebinds there. Keep blocks and port lists narrow, and list loopback servers in `allowedOrigins` rather than as a loopback block.
+## Features and limitations
 
-To reach development servers without listing them, set `"discoverDevServers": true`. The service then allows loopback ports with a live listener, over IPv4 and IPv6, and checks again at most every three seconds, so a server that stops loses access. `localhost` uses whichever loopback family the server listens on. Discovery grants only `127.0.0.1`, `[::1]`, and `localhost`, so another name that resolves to loopback stays blocked. Discovery never allows ports held by OpenChamber itself, the host's other child processes such as OpenCode and other extension services, or this extension and its Chrome, and it allows nothing when it cannot tell which process owns a port. SSH, DNS, SMB, printing, common database ports, and the Node.js inspector port are always skipped. Every other loopback listener on the machine can become reachable from pages in the shared browser, including databases on other ports, a second OpenChamber or OpenCode, and debugging ports of other browsers. Keep discovery off where that matters.
+Available: user/agent control handoff; tabs and popups; navigation, keyboard/mouse, snapshots and captures; mobile/tablet/desktop viewport emulation; optional native single-select compatibility; error/warning counters; and **Browser inspector** for the visible page's console, network and JavaScript evaluation.
 
-Restart the extension after editing its configuration. `localhost` means the machine running the extension, so an SSH-forwarded port must be reachable there. A page that uses another private origin for assets, API requests, or sockets needs that origin allowed too. Origin grants distinguish HTTP from HTTPS and include the corresponding WebSocket traffic on the same host and port. They match the host name in the address, not what it resolves to, so a page on a domain that resolves or rebinds to a granted address cannot reach it, and an alias such as `myapp.test` needs its own entry. `localhost` also uses the grants for `127.0.0.1` and `[::1]`, because the service resolves it itself. Link-local, cloud metadata, CGNAT, IPv6 transition, and reserved ranges remain blocked even when listed.
+Not included: embedded Chrome DevTools, a graphical profile manager or one-click profile deletion, a guaranteed SSO/2FA flow, automatic replay of failed agent commands, and independent simultaneous control by multiple viewers. The current UI displays one selected session at a time. The original extension's broader feature/validation history is available in its Git repository; this fork's changes should be judged separately.
 
-A blocked plain-HTTP address opens a Server Browser page that names the origin, the path of this `config.json`, and the entry to add. For a loopback address it also says whether discovery is off or found no eligible server on that port. HTTPS navigations to a blocked address still end in Chrome's own `ERR_TUNNEL_CONNECTION_FAILED` error.
+## Troubleshooting
 
-Chrome discovery checks standard locations. If necessary, add `"chromePath": "/absolute/path/to/chromium"` to `config.json`. This file is local configuration and is excluded from Git and the distributed package. Keep a copy before reinstalling or updating an installation.
+| Symptom | Check / action |
+| --- | --- |
+| Panel says “Ask the agent to open a page” | Open a real project/chat and call `openchamber_web → browser.open`, or click **Open for this chat** when available. |
+| Agent says the user has control | Release control in the browser panel before retrying. |
+| `ECONNREFUSED 127.0.0.1:<port>` | Determine whether the port is a **Chrome DevTools endpoint** or the **extension service**. Different ports are normal. Check the Chrome process, extension status and service logs. Version `0.9.0-dev.2` fixes one stale-DevTools-port/retry path; it does not establish the cause of every crash. |
+| Panel says “Extension service stopped” | Check permission/enablement and the extension service health; restart the extension via Settings if necessary. Restart OpenChamber only when the host cannot recover. |
+| Site asks to sign in again | Check the correct project/worktree identity, server-side cookie expiration, and whether the site uses SessionStorage-only authentication. |
+| Local development server is blocked | Add only the needed `allowedOrigins`, then restart the extension service. |
 
-For a folder installation, clone this repository, configure it, and install its absolute directory path through OpenChamber's extension settings.
+A failed field test on **2026-11-01** showed the service answering `/health` while no Chrome process was running and an agent request failed to connect to a stale Chrome DevTools port. The exact reason Chrome exited was **not established**. The retry and stale-port fixes above address confirmed code weaknesses, but full independent recovery still needs a host-level test.
 
-## What works today
-
-The provider implements `browser.open`, `snapshot`, `click`, `type`, `select`, `scroll`, `back`, `forward`, `inspect`, `capture`, `resize`, and `close`. It starts without an open viewer. `browser.open` reports `settled: true` only once the page has loaded and then gone quiet, with no new resource and no DOM tree or text change for 500 ms, waiting at most 5 seconds; `browser.capture` waits the same way for at most 3 seconds. `browser.snapshot` lists each native select's options, up to 32, and a `selector` scopes its text as well as its elements. `browser.select` picks one option of a native single-value select by exact label or value and refuses ambiguous, disabled, multiple, and custom controls without changing the page. `browser.close` closes a tab the agent opened, its most recent one without a `tabId`, and refuses a tab the viewer or a page opened. The shared panel sends pointer, keyboard, wheel, text, and resize events to the same Chrome target used by the agent. `browser.snapshot` lists the chat's tabs with ids, and every action accepts a `tabId` from that list; without one, it acts on the tab the agent last used, or on the newest tab it opened when that one closed, and on the tab selected in the dock only while the agent has none. `browser.open` without a `tabId` opens a background tab, unless the visible tab is still blank, and returns that tab's id. An id this browser did not issue is refused instead of being applied to another tab, and acting on a background tab does not change what the viewer sees.
-
-Each authoritative `{ directory, sessionId }` pair still gets its own browser runtime, tabs, form state, and navigation history, but **cookies and local storage now belong to the Git project**. Multiple Git worktrees share one project profile. Two unrelated project directories never share a browser profile. Calls with either field missing fail closed instead of reusing a private chat's browser. The service keeps at most four live scopes, and a scope with no activity for five minutes closes. At the limit, the scope unused for longest makes room once it has been idle for a minute; if every scope was active in the last minute, the new chat's action fails with an explanation instead of deleting active browser state. If Chrome exits unexpectedly, the service drops that scope and the dock says so. The chat's next browser action, or **Open for this chat**, starts a new browser.
-
-The first scope becomes visible automatically. After that, the dock follows the chat you open in OpenChamber when that chat has a browser, and you can pick any live scope from its session tabs. Agent work in another chat continues in that chat's browser without redirecting the viewer. The dock above the viewer provides page tabs, an address field, back, forward, reload or stop, a viewport picker, the native-select mode, and a count of the page's console errors and warnings, all through the official `serviceRequest` bridge. The dock works while the shared surface is idle and for the viewer holding control; other viewers' docks stay disabled until control is released. An address typed without a scheme opens over HTTP when it is an IP address or `localhost`, and over HTTPS otherwise.
-
-Input covers the common local-browser cases: Enter, editing and navigation keys, Ctrl/Cmd+A, AltGr/Option characters, dragging to select text or move sliders, the wheel, and pasting. Ctrl/Cmd+C copies the page selection, including selections inside open shadow roots and same-origin frames, but never the contents of a password field. A right click that the page does not handle itself opens a viewer menu drawn inside the page with Back, Forward, Reload, and Copy. Copy offers the text through an OpenChamber notification with a copy button, because the service cannot write to your clipboard.
-
-Links that open a new tab and `window.open` popups become page tabs in the dock. You can open, switch, and close tabs, and closing a popup returns to the tab that opened it. Tab titles, loading state, and back/forward availability update live, and **Stop** interrupts a slow load. Every tab the extension opens gets its own Chrome window, so a tab in the background keeps painting and running at full speed, and the agent can capture it. A tab that a page opens from a link shares the opener's window, as in Chrome, and whichever of the two is behind can fail to capture.
-
-Pages are sized in CSS pixels: the service converts the panel's device-pixel size with the viewer's pixel ratio, so moving the viewer to a display with another ratio does not change the page's layout width. **Fit panel** follows the panel. A preset (mobile, tablet, desktop), a custom size, rotation, or mobile emulation fixes the size until someone picks another, and the host letterboxes it. The picker says when the agent chose the current size.
-
-**Browser inspector**, under **Extension pages** in OpenChamber's sidebar, captures the visible tab's console messages and network requests while it is open, up to 300 console rows, 200 requests, and 2 MiB. It shows request details and, on demand, bodies up to 8,000 characters. Query parameters, headers, and JSON or form fields with credential-like names show `[REDACTED]`. Its prompt runs JavaScript in the page. The dock's error and warning count opens a list of the visible tab's latest 50 errors and warnings under the address bar, growing the dock while it is open. The count and the list start over whenever the page loads a new document.
-
-After handing control back, use the last toolbar button, "Show native select menus in the shared browser", to enable visible native select menus for the selected project/chat scope. It is off by default and does not persist across a service restart. Enabling it applies Chromium's `appearance: base-select` to single-choice native selects in the current document and later navigations. Disabling it removes only the extension-owned inspector styles, without reloading the page or clearing form state.
-
-OpenChamber owns the control handoff. A person can take over the page, the host refuses agent actions while that person holds control, and the agent can continue after control is released. This same-page workflow has been tested through the host and its panel.
-
-## Known limitations and parity gaps
-
-| Area | Original Server Browser reference | Extension 0.8.2 |
-| --- | --- | --- |
-| Chrome DevTools | Embedded Chrome DevTools with authenticated transport and frontend asset handling. | No embedded DevTools. The Browser inspector page covers console, network, and JavaScript evaluation, and `browser.inspect` returns element details. |
-| Console and network inspection | Dedicated inspector with console capture, network rows, and request details. | Browser inspector extension page with console rows, network rows, request details, on-demand bodies, redaction, and a JavaScript prompt. It captures the visible tab only while the page is open. |
-| Tabs and popups | Tab listing, creation, switching, closing, and tracking targets opened by pages or CDP clients. | Page tabs in the dock for new tabs and popups opened by pages, with create, switch, and close. Agents list tabs through `browser.snapshot`, name one with `tabId`, open pages in background tabs, and close the tabs they opened; they cannot bring one to the viewer. |
-| Project and chat isolation | Browser contexts scoped by directory and agent session, with separate cookies/storage. | One project-scoped persistent Chrome profile with separate chat-owned tabs, bounded to four live chat scopes with idle expiry and least-recently-used replacement. Unknown context fails closed. The selected viewer remains service-global. |
-| Browser controls | Browser-specific navigation, tab, viewport, and inspection controls. | Dock with session tabs, Open for this chat, page tabs, address field, back, forward, reload or stop, viewport picker, native-select mode, and the page's errors and warnings. It works for the viewer holding control. |
-| Local-server access | Grants derived from live development-server discovery and checked against active destinations. | Manual `allowedOrigins` and `allowedNetworks`, applied on restart, plus opt-in `discoverDevServers` for live loopback listeners. Discovery excludes by process ownership because extensions do not receive the host's port list. No in-app origin editor. |
-| Viewports | Coordination between the viewer, agent presets, and external DevTools emulation. | CSS-pixel sizing with the viewer's pixel ratio, fit-panel and fixed modes, presets, custom sizes, rotation, mobile emulation, and agent/viewer authorship. External DevTools emulation is not ported. |
-| Context menus and clipboard | Page-menu handling and selection reads through open shadow roots and same-origin frames. | Viewer menu drawn inside the page for right clicks the page leaves alone. Plain-text copy through open shadow roots and same-origin frames, never from password fields. No rich clipboard formats or copy/paste fallback buttons. |
-| Keyboard and pointer details | Dedicated editing-key and cross-platform shortcut handling. | Enter, editing and navigation keys, select-all, AltGr/Option characters, and held-button dragging. Like the original, pointer input sends a click count of 1, so double-click selection does not work. Full IME parity is unverified. Punctuation reports the `keyCode` of its US key position, so on other layouts a page that reads `keyCode` can see a different value than a local Chrome would give. |
-| Native popups | A matched local test showed the same invisible native `select` popup with the original screencast implementation. | A scope-local toolbar mode uses Chromium's `appearance: base-select` so single-choice options render inside the captured page. It is reversible and off by default because it changes the site's native select rendering. Native menus remain invisible while the mode is off. |
-| Chrome/CDP configuration | Managed Chrome discovery and CDP configuration integrated with the original host workflow. | Standard executable discovery or a manual `chromePath`. No CDP settings UI, CDP endpoint for external MCP clients, or supported attachment to an existing Chrome session. |
-| Runtime integration | Browser behavior integrated into OpenChamber's runtime contracts. | Linux web-host path validated. Mobile and VS Code integration have not been implemented. Electron, Windows/macOS, and private relay remain unverified. |
-
-### Scope, viewing, and lifetime
-
-Agent browser state is isolated by the project directory and chat session id supplied by OpenChamber. The shared viewer is still one service-global selection. It is a convenience view, not an authorization boundary between mutually untrusted viewers.
-
-Only the first newly created scope becomes visible automatically. Later agent actions stay in their own background scope. A person can switch the visible scope while the shared surface is idle or while they hold control, from the dock's session tabs or by opening another chat that has a browser. Every dock command carries the view generation it was created for, so a delayed address or history command cannot mutate a scope selected afterward. Switching also cancels the old frame wait and rebases frame sequence numbers so the host requests the new image immediately.
-
-When the visible scope changes, the service applies the current panel size before publishing its first frame, so a scope in **Fit panel** mode never appears as a tiny letterboxed image. A fixed size stays until someone picks another, whether the agent or a viewer chose it.
-
-The host tells the service which viewer sent each dock request and input batch, and which frame that viewer last drew. The viewer holding control can use the dock; while someone holds control, the other viewers' docks are disabled and the host refuses agent actions. Input made on an image of an earlier view, such as another scope or tab, is refused with HTTP 409 instead of reaching the new view, and a dock command made on one is refused too. The visible scope and tab remain one selection shared by every viewer.
-
-Each project uses one Chrome process with a persistent on-disk profile. Chat scopes use separate tabs within their project's Chrome process. A scope closes after five minutes without agent actions, dock commands, input, or a viewer showing it, which closes that chat's tabs but retains its project's profile, cookies, and login state. Stopping or restarting the service closes each Chrome process and retains its on-disk profile; no browser keeps running after shutdown. OpenChamber stops an unattended browser provider after ten minutes without actions; an open shared panel keeps it running. The next start creates fresh browsers. OpenChamber also replaces a service that misses an action's time limit, which would take every chat's browser with it, so an action the page does not finish in time fails a little earlier instead, after 18 seconds or 43 for `browser.open`, with "The page did not respond in time". The project profile survives idle expiry and OpenChamber process restarts. Open tabs, navigation history, temporary sessionStorage, and JS runtime state do not survive. A website may also expire or revoke its own server-side session. The persistent-profile behavior is specific to this fork.
-
-Native select compatibility applies only to single-choice `<select>` elements without `multiple`, with no `size` attribute or with `size="1"`. It does not style custom menus such as Radix components. Chrome must support `appearance: base-select`; unsupported versions return an error and leave the mode off. The service uses CDP inspector stylesheets, so page CSP does not need to be bypassed. Styles inside shadow roots and out-of-process frames are not guaranteed because the extension does not attach to additional targets for this workaround. A site can still depend on native select measurements or platform-specific behavior. During validation, one Bootstrap control became taller and showed both its own arrow and the base-select arrow. The extension never enables the mode automatically for this reason.
-
-### Configuration and security boundaries
-
-The local-origin list belongs to the extension installation, not to a project or chat. It remains in effect until configuration changes and the service restarts. Local configuration is not bundled and should be backed up before updating or reinstalling. Reserved and metadata address restrictions still apply even to listed destinations, as described above.
-
-The service uses OpenChamber's authenticated loopback protocol and applies browser egress checks. The host's service approval and declared executable names describe permission intent; they do not provide an operating-system sandbox. The service runs with the host user's access.
-
-Chrome runs headless but presents itself as regular Chrome, because Google refuses sign-in from a browser that says it is automated: the User-Agent names `Chrome` instead of `HeadlessChrome`, and `navigator.webdriver` is false. Pages therefore cannot tell from those signals that an agent may be driving the browser. The User-Agent carries the major version that `chrome --version` reports, or on Windows the version resource of `chrome.exe`; if neither gives a version, Chrome keeps its `HeadlessChrome` User-Agent.
-
-Development-server discovery trusts process ownership, not intent. With it on, any page that the agent or a person opens in the shared browser can send requests to every eligible loopback listener. Discovery runs `lsof`, and `ps` on macOS; both are declared in the manifest. It never widens access beyond loopback.
-
-### Compatibility and validation limits
-
-The extension depends on the published `@openchamber/sdk@2.5.3`. Its contracts still need only OpenChamber 2.0.1, the first release with tab targets, viewer identity, and dock resizing; agents get `browser.close` from OpenChamber 2.5.0 and `browser.select` from 2.5.1, and older hosts never send them. Only the Linux web host has been exercised against the 2.0.1 floor, and the bundles built with SDK 2.5.3 have been run only on a 2.5.3 host.
-
-The shared panel displays image frames. It does not expose the remote page's DOM as local controls, and accessibility or responsiveness parity with the original viewer has not been established. No performance or frame-rate equivalence is claimed.
-
-Automated checks and manual host tests do not establish compatibility with every website, login popup, platform, transport, or concurrent workflow. The exact validation scope is recorded below.
-
-## Roadmap to parity
-
-Missing functionality is not automatically a limitation of the SDK. The table separates extension implementation, host/SDK design questions, and validation work:
-
-| Work | Current assessment | Completion criteria |
-| --- | --- | --- |
-| Recover interaction details | Ported in 0.6.0, except double-click selection, which the original also lacks, and verified IME behavior. | Verify IME composition and platform shortcuts on real pages through the shared panel. |
-| Recover tab management and browser controls | Viewer-side tabs, popups, and controls are ported, agents name tabs by id, and they close the tabs they opened. Agents cannot bring a tab to the viewer. | Run a multi-tab workflow with a real model, not only direct tool calls. |
-| Harden scoped viewing | Browser state is isolated per project/chat, and dock calls and input carry the host's viewer identity and frame sequence, so stale input cannot cross a scope or tab switch. The visible selection is still shared by every viewer. | Decide with upstream whether concurrent viewers need their own selection. |
-| Restore the inspector and embedded DevTools | The console and network inspector is an extension page. Embedded DevTools is not implemented; the image/input surface does not provide a DevTools frontend, asset proxy, or CDP transport. | Inspect the same selected target with DevTools, with authenticated assets and transport, bounded buffering, proper cleanup, and no raw debugger exposure to viewers. |
-| Restore the local-server workflow | Opt-in discovery allows live loopback listeners and drops them when they stop. It excludes by process because extensions do not receive the host's port list. | Validate discovery on macOS, and adopt authoritative host discovery or scoped grants if upstream offers them. |
-| Match session lifecycle behavior | Idle expiry, least-recently-used replacement, and crash recovery are implemented, and actions give up before the host's time limit so a stuck page cannot restart the service. | Define restart behavior and test that failed or stale work cannot affect another session or revive a stopped service. |
-| Establish runtime and release support | A validation and integration task, not a promise of automatic SDK compatibility. | Verify each supported runtime and transport, test a real agent workflow, use a compatible released SDK, and publish an explicit support matrix. |
-
-The latest [maintainer response](https://github.com/openchamber/openchamber/pull/3425#issuecomment-5752977364) keeps embedded DevTools and development-server discovery/grants outside the SDK for now, while explicitly allowing an extension-owned console. The console and network inspector is therefore an extension page, and the dock grows through `host.setHeight` to list the page's errors and warnings under the address bar. Discovery lives in the service as an opt-in.
-
-The next implementation work should recover capabilities that fit the existing contracts and produce small reproductions for any remaining host blockers. Those findings can then be discussed upstream with concrete requests. We should call this a replacement for the original only after the parity gaps have been closed or explicitly documented as agreed differences, with evidence from the actual user flows.
-
-## What we still need from the SDK
-
-This assessment is based on the [service contracts in OpenChamber 2.5.3](https://github.com/openchamber/openchamber/blob/v2.5.3/packages/sdk/GUEST_SERVICES.md). Since 2.0.1 they add `browser.close`, `browser.select` with the options of native selects in snapshots, and a `settled` that waits for the page to go quiet, all adopted here. The rest of what changed through 2.5.3 is for other kinds of extensions. These are discussion points for upstream, not agreed API changes.
-
-The SDK now provides unattended browser-provider actions, authoritative project/chat context, a shared image/input viewer with host-owned control, an extension page docked beside that viewer, tab ids on every browser action, closing the tabs an agent opened, the identity and last frame of the viewer behind each dock call and input batch, and a dock that sets its own height. We do not need to request those again.
-
-### Confirmed contract gaps for parity
-
-None for the workflows mapped so far. Viewer identity and stale-input fencing arrived in 2.0.1, and closing agent tabs in 2.5.0.
-
-### Capabilities to investigate with upstream
-
-These requirements are concrete, but we have not established that each requires a new API. Existing extension mechanisms should be evaluated first.
-
-| Need | What needs clarification or support | Evidence that would close the question |
-| --- | --- | --- |
-| Supported runtime behavior | The extension uses the released SDK 2.5.3; the Linux web host and a macOS 2.5.3 web host have been exercised. | Validation on every runtime and transport we advertise. |
-| The tab an action without `tabId` uses | Since 2.5.0 the tool tells agents that such an action uses the tab they last used, else the user's open tab, while the provider contract still says the tab the user sees. This extension follows the tool, because that is what agents act on. | Upstream aligns the provider contract with the tool. |
-| The viewer's `keyCode` | Key events carry `key` and `code` but not the `keyCode` the viewer's browser computed for its layout, so the service derives it from the US position of the key. | Upstream decides whether key events carry the viewer's `keyCode`. |
-
-Embedded DevTools and host-level development-server discovery/grants are deferred product discussions. The maintainer has explicitly kept them outside the SDK for now. The extension's opt-in discovery and its inspector page use existing service and page mechanisms; neither is presented as an accepted upstream API request.
-
-### Work that remains ours
-
-Chrome target tracking, browser actions, selection traversal, editing-key handling, clipboard improvements, proxy cleanup, and regression tests belong in the extension. A missing implementation is not evidence that the SDK needs to change. Persistent profiles are also a separate product decision, not a prerequisite for reproducing the original temporary-profile behavior.
-
-For any upstream API request, first provide the user workflow, the current contract that prevents it, a minimal reproduction, and the smallest proposed capability. DevTools and local-server discovery remain separate product discussions.
-
-## Build and test
+## Build, tests and current verification
 
 ```sh
 bun install --frozen-lockfile
@@ -211,50 +95,10 @@ bun run check
 bun run package
 ```
 
-`service/main.js`, `panel/main.js`, and `panel/inspector.js` are the committed bundles used by Git installations. `bun run package` writes the installable package to `artifacts/openchamber-server-browser-<version>.zip`. Rebuild the bundles after changing source files.
+`service/main.js`, `panel/main.js` and `panel/inspector.js` are committed installable bundles; after source changes **rebuild them** before updating GitHub. Tests involving Chrome may skip when Chromium is absent.
 
-## Validation
+**Current fork verification:** JavaScript syntax checks and isolated fault-injection checks were run, and regression tests were added for stale DevTools ports, startup retry, shared cookies/storage across chats, restart persistence, Git worktree identity and cross-project isolation. **The complete repository test suite and a successful real-world authenticated recovery test have not yet been confirmed.** Do not interpret a merged commit as full production validation.
 
-Initial validation used Linux with OpenChamber web host at `56f33fd59a3225c28be4ba25b91aae958d4374f5`, using an isolated data directory and a temporary local website. The OpenCode backend was a test fixture; no model or real chat session was used. For 0.2.0, validation used the unmodified web host at `959d179c6`, a real managed OpenCode process, two test project/chat contexts, and real Chrome. No model conversation was run.
+## Source and license
 
-The host routed all ten browser actions to real Chrome, saved a capture to the test project, rendered the shared panel, and preserved a form value across user/agent handoff. Manual panel checks covered clicking, typing keys, pasting, resizing, taking control, and handing control back. An unapproved loopback port was blocked. Disabling the extension stopped its service and Chrome processes.
-
-The automated suite covers service authentication and protocol validation, private-address policy, cancellation, real Chrome actions and shared input, temporary-profile cleanup, context isolation, fail-closed unknown context, pinned viewing, stale frame cancellation, dock generation checks, and the four-scope bound. Chrome-dependent tests report a skip when Chrome is unavailable. Windows, macOS, Electron, private relay, and mobile have not been validated.
-
-The 0.2.0 pre-push run passed 34 tests with no skips. Live host checks verified isolated cookies and storage across two scopes, same-page user/agent handoff, the host's 409 during human control, keyboard session switching, Enter-only navigation, back/forward, reload with a URL fragment, and invalid-URL recovery. Narrow and wide toolbar layouts were visually checked.
-
-For 0.3.0, the final automated run passed 41 tests with no skips, including real Chrome, compatibility under restrictive page CSP, navigation/reload persistence, disabling without clearing form values, scope isolation, and control/generation guards. A separate regression repeatedly aborts CONNECT tunnels while upstream data is arriving. It reproduced the uncaught `EPIPE` before the socket fix and passed afterward. The fix closes the affected connection rather than terminating the service; it does not change origin permissions.
-
-Live checks on the same unmodified `959d179c6` Linux web host covered Selenium's native select, selecting an option with the mouse, preserving form values when disabling compatibility, and opening/selecting a Radix custom dropdown. The original integrated build also reproduced the invisible native popup in a matched local comparison, so this is not reported as an SDK rendering regression. The final uninstrumented bundle completed the previously failing local-to-public navigation with the viewer connected, retained a second independent scope, and remained connected during an idle check longer than 40 seconds. Build, syntax, focused lint, and ZIP integrity checks passed. This is bounded functional evidence, not a long-running stability or cross-platform claim.
-
-For 0.4.0, validation used the OpenChamber 2.0.0 web host with OpenCode 2.0.15. An `openchamber_web` `browser.open` call from a real chat created a scope for that chat's directory and session, launched Chromium, and appeared in the panel. Before any action, the rebuilt panel showed its empty-state hint with the toolbar disabled. After the host's idle stop, no Chrome process or temporary profile remained. The host's own install check accepted the package on 2.0.0 and refused it on 1.24.2 as `host-too-old`. Switching to SDK 2.0.0 left both bundles byte-identical to the 0.3.0 build, and the automated suite passed 41 tests with no skips.
-
-For 0.5.0, the automated suite passed 46 tests with no skips. With the built bundle, a real `config.json`, and real Chrome, a listed port inside an allowed block loaded. The same host on an unlisted port with a server running, and an address outside the block, showed the new blocked page, and a `0.0.0.0/0` block stopped the service with a clear error. The blocked page rendered without overflow at 320, 622, and 1440 pixels. Through the live OpenChamber 2.0.0 panel, typing `192.168.1.20:3100` opened `http://192.168.1.20:3100/` and `example.com` opened `https://example.com/`. A blocked HTTPS address still ended in `ERR_TUNNEL_CONNECTION_FAILED`.
-
-For 0.6.0, the automated suite passed 83 tests with no skips. Real Chrome covered keyboard input, dragging, copying through shadow roots and frames, the viewer menu, tabs and popups, loading state and stop, CSS-pixel viewports, crash recovery, and the inspector, and a real listener scan ran through both `lsof` and `/proc`. Live checks used the OpenChamber 2.0.0 web host with OpenCode 2.0.15 in an isolated data directory, real Chromium, two real chats, and a local test site reached through development-server discovery, with the viewer driven through Chrome DevTools. They covered typing, Enter, AltGr characters, dragging to select, Ctrl+C, the viewer menu and its Copy notification, a page's own context menu, page tabs, `target=_blank` and `window.open` popups, live titles and stop, a pixel-ratio change, presets, rotation, custom sizes, the inspector's console, request details, redaction, and prompt, the problem count, Open for this chat, following chat switches, killing Chrome, and idle expiry. Discovery allowed the test site while the blocked page still covered the host's own port and its OpenCode. That pass found and fixed eight defects: a black viewer when the first frame request opened the page, a screencast start during a renderer swap, drags without the held button, the viewer menu closing on a repeated control claim, problem counts surviving navigation, a pixel-ratio change resizing the page, a custom-size editor that never applied inside the host's sandboxed frame, and inspector tabs losing focus on every poll. It also found that origin grants had matched the address a name resolved to since the first release, so `lvh.me`, a public domain pointing at 127.0.0.1, reached a discovered server, and a page could do the same through DNS rebinding. Grants now match the requested name: through the real proxy, a real listener scan, and real DNS, `lvh.me` and `localtest.me` got the blocked page while `127.0.0.1` and `localhost` still reached the server. No agent action ran through the host in this pass; the automated suite covers the provider path. Windows, macOS, Electron, private relay, and mobile have not been validated.
-
-For 0.7.0, the automated suite passed 90 tests with no skips, and the published SDK 2.0.1 produced bundles byte-identical to the ones built from upstream commit `0db5ed016`, its unreleased source. Development checks used a web host built from that commit in an isolated data directory, with OpenCode, real Chromium, and a local test site. Agent actions sent through the host's `openchamber_web` endpoint opened a page in a background tab and got its id, listed the tabs in `browser.snapshot`, and clicked and captured in that tab while the viewer stayed on its own; an unknown id was refused. With two viewers, the one holding control navigated from the dock while the other's dock stayed disabled until control was released. Input posted with the frame sequence of the previous tab got 409, and input on the current frame went through. Opening the dock's error list grew the dock through `host.setHeight`, and the list started over on a new page. That pass found that capturing an agent tab that had been in the background for a while waited for a frame Chrome no longer drew; after the host's 20-second limit, OpenChamber replaced the service and every chat lost its browser. With tabs in their own windows, a background tab captured through the host in 63 ms after 40 seconds, a page stuck in an endless loop failed after 18 seconds with the same service still running, and selecting a tab in the dock moved the stream to that tab's window. A Chrome that kept running after a real service restart showed that shutdown stopped Chrome last, after in-flight work that could outlast the host's five-second grace. Shutdown now stops Chrome first: a SIGTERM while a page hung in an endless loop, with native select styles to undo, stopped the service in 1.7 seconds with no Chrome or profile left; before the change, closing that browser took 30 seconds. The release checks repeated this on the published OpenChamber 2.0.1 web host with OpenCode 2.0.15 in an isolated data directory. Through its `openchamber_web` endpoint, a first page loaded into the blank visible tab and a second into a background tab, whose id then typed, clicked, and captured, 66 ms after 40 seconds in the background, while the viewer stayed on its own; an unknown id was refused, and the endless loop failed after 18 seconds with the same service still running. Opening the dock's error list grew the dock from 103 to 235 pixels. The viewer in control used the dock while a second viewer read "Another viewer has control" with its toolbar disabled, and both docks returned once control was handed back. Disabling the extension while a page hung stopped the service and its Chrome within 60 ms and removed the profile, and a 2.0.0 host refused the package as `host-too-old`.
-
-For 0.7.1, a report that Google refused sign-in with "This browser or app may not be secure" reproduced with any address, even one without an account. Google rejected the identifier step while the User-Agent said `HeadlessChrome` and while `navigator.webdriver` was true, and accepted it only with both fixed. A per-page User-Agent override also passed but dropped the `Sec-CH-UA` client hints, so Chrome now gets its User-Agent on the command line, which also covers popups and workers. With Chrome 156 on macOS and Chromium 156 in a Debian 12 container on a datacenter server, the real runtime reached Google's normal "Couldn't find this account" answer in a tab and in a `window.open` popup. The built bundle did the same through `browser.open`, `browser.type`, and `browser.snapshot` on an isolated OpenChamber 2.5.3 web host on macOS. The suite passed 91 tests with no skips on Linux, and 90 on macOS, where the Linux-only listener test skips. No real account was used, so the password step was not reached, and Windows was not tested.
-
-For 0.8.0, the suite passed 94 tests on macOS, where the Linux-only listener test skips, with real Chrome tests for closing only the agent's tabs, selecting options and refusing ambiguous, disabled, multiple, and custom controls without changing the page, select options and scoped text in snapshots, waiting for a page that replaces its splash after a fetch, giving up on a page that never stops changing, and the agent keeping to its last tab while the viewer switches. The scoped-text, settle, and last-tab tests failed against the previous code. On an isolated OpenChamber 2.5.3 web host on macOS, actions sent through the host's `openchamber_web` endpoint opened a splash page that answered settled with its final text, selected an option that the page's `change` handler saw, were refused a disabled option and a request with both label and value, read a select's options in a scoped snapshot, and closed the agent's tabs, newest first, until none were left. A snapshot without a tab id read the agent's background tab while the viewer stayed on the first page, and after the agent closed that tab, its earlier one. The dock built with SDK 2.5.3 showed the session and page tabs, the toolbar, and the page at its 104-pixel size, and dropped a tab the agent closed. Linux and the 2.0.1 floor were not run with this build.
-
-For 0.8.1, the Chromium source of Chrome 156 handles `--version` only on POSIX, so on Windows `chrome.exe --version` would open a normal browser window instead of printing; the service reads the major version from the version resource of `chrome.exe` instead. Against the `chrome.exe` of Chrome for Testing 156.0.8078.73 for win64, it read 156 in under 4 ms. That file holds both a stray copy of the resource's signature and an unrelated `VS_VERSION_INFO` string before the real resource, so the reader anchors on the key, and a new test covers both. The suite passed 95 tests on macOS, where the Linux-only listener test skips. Chrome has not been run on Windows: the User-Agent and Google sign-in there are unverified.
-
-For 0.8.2, a report that the dot of an email address could not be typed, only pasted, traced to the key's `keyCode`: the service used the character's code, and `.` is 46, the code of Delete, so Chrome deleted forward instead of typing. `'`, `!`, `(` and other punctuation collided with arrow and page keys the same way. Punctuation now takes the code of its physical key. The keyboard test, extended with `.`, `-`, `'`, `!` and `(`, kept only the `-` against the previous code and types all five now. The suite passed 95 tests on macOS, where the Linux-only listener test skips. The fix has not been run through the shared panel or on Windows.
-
-## Attribution
-
-Adapted from OpenChamber under the MIT license. See [LICENSE](LICENSE), [NOTICE](NOTICE), and [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).
-
-## Persistent project profiles (fork)
-
-Profiles are stored at `~/.local/share/openchamber-server-browser/profiles/<sha256-project-id>/`, or at `profileRoot` if configured. Each directory is created with mode `0700`, never added to Git, and survives a plugin update. Git worktrees share one profile because the identity comes from their common Git directory. For non-Git folders, the real absolute project path is used.
-
-An optional `profileRoot` entry in the extension's `config.json` must be an absolute path. Do not store profiles inside the extension installation directory, a shared Git repository, or a backed-up workspace that is accessible to other users. Anyone with filesystem access to a Chrome profile may be able to recover browser authentication material.
-
-Separate chats have separate tabs. The browser manager retains its existing limit of four concurrently active chat scopes and five-minute idle eviction. The last chat to close also shuts down Chrome **gracefully** so Chromium can flush its profile. If Chrome disappears unexpectedly, the failed endpoint and project start state are cleared; the next agent browser action starts a new Chrome process with the same profile. A new chat starts Chrome with the saved project profile. There is no profile deletion or reset action in this version; to revoke sign-in, log out on the website (or stop the extension and manually remove only the intended project profile).
-
-Security: private/loopback network access still passes through the existing allowlist proxy, now attached to each project's Chrome process. CDP remains bound to localhost. Distinct project profiles do not share their cookies, local storage, or browser targets. Since multiple chats within a project share authentication, only run mutually trusted agents within that project. Changing the project directory or moving a non-Git folder results in a new profile identity. The service does **not** guarantee persistence of sessionStorage-only tokens, passwords managed by an external SSO provider, or server-side sessions that expire.
-
-Validation: `npm test` includes tests for Git worktree project identity, shared cookies/storage across two chats, tab access isolation, restart persistence, and cross-project isolation when Chrome is available.
+Original implementation: [JosueGalRe/openchamber-server-browser](https://github.com/JosueGalRe/openchamber-server-browser), originating from [OpenChamber PR #3425](https://github.com/openchamber/openchamber/pull/3425). MIT — see [LICENSE](LICENSE), [NOTICE](NOTICE), and [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).
