@@ -57,15 +57,31 @@ export const createProjectBrowsers = ({
           if (!pending) {
             pending = (async () => {
               const proxyAddress = await proxy.listen();
-              chrome = createChromeProcess({
+              const instance = createChromeProcess({
                 chromePath, profileDir,
                 proxyServer: proxyAddress,
               });
-              chrome.onExit((detail) => {
+              chrome = instance;
+              instance.onExit((detail) => {
+                if (chrome === instance) {
+                  chrome = null;
+                  pending = null;
+                }
+                // A browser crash invalidates all chat CDP connections and
+                // lets their manager retire the old scopes automatically.
                 for (const listener of entry.exitListeners) listener(detail);
               });
-              return chrome.ensure();
-            })();
+              return instance.ensure();
+            })().catch(async (error) => {
+              // Do not cache failed Chrome startups. Otherwise every later
+              // action reuses the rejected promise and the service can only
+              // recover after a manual restart.
+              const failed = chrome;
+              chrome = null;
+              pending = null;
+              await failed?.close().catch(() => {});
+              throw error;
+            });
           }
           return pending;
         },
