@@ -5924,9 +5924,11 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3, profile
     });
     child.once("exit", (code, signal) => {
       if (closed) return;
+      const detail = `code=${code ?? "null"}, signal=${signal ?? "none"}`;
       if (!result) {
-        exitError = new Error(`Chrome exited during startup (code ${code ?? "null"}, signal ${signal ?? "none"})`);
+        exitError = new Error(`Chrome exited during startup (${detail})`);
       } else {
+        console.warn(`[server-browser] Chrome stopped unexpectedly (${detail}); recreating on next browser action`);
         result = null;
         launchPromise = null;
         for (const listener of exitListeners) listener({ code, signal });
