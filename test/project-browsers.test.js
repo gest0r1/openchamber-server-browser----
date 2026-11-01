@@ -9,6 +9,8 @@ import { createProjectBrowsers, projectIdFor } from '../src/project-browsers.js'
 import { createBrowserRuntime } from '../src/browser-runtime.js';
 import { resolveChromePath } from '../src/chrome-process.js';
 
+let availableChrome = null;
+try { availableChrome = resolveChromePath(); } catch {}
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'oc-persistent-project-'));
 const waitFor = async (predicate, timeout = 5000) => {
   const until = Date.now() + timeout;
@@ -59,7 +61,7 @@ test('Git worktrees share a project ID', () => {
 });
 
 test('project profile shares cookies and localStorage across chats, survives restart, and isolates projects',
-  { skip: resolveChromePath() ? false : 'Chromium unavailable' },
+  { skip: availableChrome ? false : 'Chromium unavailable' },
   async () => {
     const root = tmp();
     const projectA = path.join(root, 'a');
@@ -73,7 +75,7 @@ test('project profile shares cookies and localStorage across chats, survives res
     });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     const origin = `http://127.0.0.1:${server.address().port}`;
-    const pool = createProjectBrowsers({ profileRoot, allowedOrigins: [origin], chromePath: resolveChromePath() });
+    const pool = createProjectBrowsers({ profileRoot, allowedOrigins: [origin], chromePath: availableChrome });
     const sessions = new Set();
     const open = (directory, sessionId) => {
       const runtime = createBrowserRuntime({
