@@ -1,6 +1,6 @@
 # Server Browser for OpenChamber — persistent project profiles (testing branch)
 
-This fork implements durable, per-project browser sign-in. It has not yet been validated against every real-world login flow.
+This fork implements durable, per-project browser sign-in. Version 0.9.0-dev.2 fixes stale Chrome DevTools ports left by interrupted runs and allows a later browser action to recover from failed Chrome startup without restarting OpenChamber. Real-world login flows still require manual validation.
 
 Run Chrome on the OpenChamber server. Agents drive it with the `browser.*` actions of OpenChamber's `openchamber_web` tool, and you can open the Server Browser panel to see and control the same page, including its current form values, cookies, and navigation state.
 
@@ -253,7 +253,7 @@ Profiles are stored at `~/.local/share/openchamber-server-browser/profiles/<sha2
 
 An optional `profileRoot` entry in the extension's `config.json` must be an absolute path. Do not store profiles inside the extension installation directory, a shared Git repository, or a backed-up workspace that is accessible to other users. Anyone with filesystem access to a Chrome profile may be able to recover browser authentication material.
 
-Separate chats have separate tabs. The browser manager retains its existing limit of four concurrently active chat scopes and five-minute idle eviction. The last chat to close also shuts down Chrome **gracefully** so Chromium can flush its profile. A new chat starts Chrome with the saved project profile. There is no profile deletion or reset action in this version; to revoke sign-in, log out on the website (or stop the extension and manually remove only the intended project profile).
+Separate chats have separate tabs. The browser manager retains its existing limit of four concurrently active chat scopes and five-minute idle eviction. The last chat to close also shuts down Chrome **gracefully** so Chromium can flush its profile. If Chrome disappears unexpectedly, the failed endpoint and project start state are cleared; the next agent browser action starts a new Chrome process with the same profile. A new chat starts Chrome with the saved project profile. There is no profile deletion or reset action in this version; to revoke sign-in, log out on the website (or stop the extension and manually remove only the intended project profile).
 
 Security: private/loopback network access still passes through the existing allowlist proxy, now attached to each project's Chrome process. CDP remains bound to localhost. Distinct project profiles do not share their cookies, local storage, or browser targets. Since multiple chats within a project share authentication, only run mutually trusted agents within that project. Changing the project directory or moving a non-Git folder results in a new profile identity. The service does **not** guarantee persistence of sessionStorage-only tokens, passwords managed by an external SSO provider, or server-side sessions that expire.
 
