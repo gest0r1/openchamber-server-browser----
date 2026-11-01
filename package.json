@@ -38,6 +38,7 @@
           "exec": [
             "chromium",
             "google-chrome",
+            "git",
             "lsof",
             "ps"
           ]
