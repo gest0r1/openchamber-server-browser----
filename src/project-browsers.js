@@ -61,6 +61,9 @@ export const createProjectBrowsers = ({
                 chromePath, profileDir,
                 proxyServer: proxyAddress,
               });
+              chrome.onExit((detail) => {
+                for (const listener of entry.exitListeners) listener(detail);
+              });
               return chrome.ensure();
             })();
           }
@@ -107,16 +110,5 @@ export const createProjectBrowsers = ({
       },
     };
   };
-  // Each project Chrome starts only once and forwards unexpected exits to
-  // all attached chat runtimes. Never start a second Chrome for a live profile.
-  const originalAcquire = acquire;
-  return { acquire: (context) => {
-    const project = originalAcquire(context);
-    const entry = projects.get(project.id);
-    if (!entry.exitForwarding) {
-      entry.exitForwarding = true;
-      // Delay registration until ensure has created Chrome; see ensure hook.
-    }
-    return project;
-  }, get size() { return projects.size; } };
+  return { acquire, get size() { return projects.size; } };
 };
