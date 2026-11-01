@@ -110,7 +110,7 @@ const probeVersion = async (endpoint) => {
   }
 };
 
-export const createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15_000 } = {}) => {
+export const createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15_000, profileDir: persistentProfileDir = null, proxyServer = null } = {}) => {
   let launchPromise = null;
   let child = null;
   let profileDir = null;
@@ -122,7 +122,7 @@ export const createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15_0
     if (!profileDir) return;
     const directory = profileDir;
     profileDir = null;
-    await fs.promises.rm(directory, { recursive: true, force: true });
+    if (!persistentProfileDir) await fs.promises.rm(directory, { recursive: true, force: true });
   };
 
   const killChild = () => {
@@ -140,8 +140,18 @@ export const createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15_0
 
   const launch = async () => {
     const binary = resolveChromePath(chromePath);
-    profileDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'openchamber-server-browser-'));
-    await fs.promises.chmod(profileDir, 0o700);
+    if (persistentProfileDir) {
+      profileDir = path.resolve(persistentProfileDir);
+      await fs.promises.mkdir(profileDir, { recursive: true, mode: 0o700 });
+      const stat = await fs.promises.lstat(profileDir);
+      if (!stat.isDirectory() || stat.isSymbolicLink() || (process.getuid && stat.uid !== process.getuid())) {
+        throw new Error('Unsafe persistent Chrome profile directory');
+      }
+      await fs.promises.chmod(profileDir, 0o700);
+    } else {
+      profileDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'openchamber-server-browser-'));
+      await fs.promises.chmod(profileDir, 0o700);
+    }
     const userAgent = await userAgentArgs(binary);
     if (closed) throw new Error('Chrome launch was cancelled');
     child = spawn(binary, [
@@ -153,6 +163,7 @@ export const createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15_0
       '--remote-debugging-port=0',
       '--remote-debugging-address=127.0.0.1',
       `--user-data-dir=${profileDir}`,
+      ...(proxyServer ? [`--proxy-server=http://${proxyServer}`, '--proxy-bypass-list=<-loopback>'] : []),
       '--no-first-run',
       '--no-default-browser-check',
       '--disable-background-networking',
