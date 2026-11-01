@@ -53,6 +53,10 @@ export const parseConfig = (value) => {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('config.json must contain an object');
   }
+  const profileRoot = value.profileRoot;
+  if (profileRoot !== undefined && (typeof profileRoot !== 'string' || !path.isAbsolute(profileRoot) || !profileRoot.trim())) {
+    throw new Error('config.profileRoot must be an absolute path when provided');
+  }
   const chromePath = value.chromePath;
   if (chromePath !== undefined && (typeof chromePath !== 'string' || chromePath.trim().length === 0)) {
     throw new Error('config.chromePath must be a non-empty string when provided');
@@ -69,6 +73,7 @@ export const parseConfig = (value) => {
   const allowedOrigins = (value.allowedOrigins ?? []).map(parseAllowedOrigin);
   return Object.freeze({
     chromePath: chromePath?.trim() ?? null,
+    profileRoot: profileRoot ?? undefined,
     allowedOrigins: Object.freeze([...new Set(allowedOrigins)]),
     allowedNetworks: Object.freeze((value.allowedNetworks ?? []).map(parseAllowedNetwork)),
     discoverDevServers: value.discoverDevServers === true,
