@@ -42,9 +42,11 @@ export const createBrowserRuntime = ({
   allowedNetworks = [],
   configPath = null,
   devServers = null,
+  sharedProject = null,
+  scopeId = null,
 } = {}) => {
-  const chrome = createChromeProcess({ chromePath });
-  const proxy = createPolicyProxy({
+  const chrome = sharedProject ? null : createChromeProcess({ chromePath });
+  const proxy = sharedProject ? null : createPolicyProxy({
     grants: [...originGrants(allowedOrigins), ...networkGrants(allowedNetworks)],
     configPath,
     devServerGrants: devServers ? () => devServers.grants() : null,
@@ -86,7 +88,7 @@ export const createBrowserRuntime = ({
     shutdownController.abort(dead);
     for (const listener of deathListeners) listener(dead);
   };
-  chrome.onExit(markDead);
+  const unsubscribeExit = sharedProject ? sharedProject.onExit(markDead) : chrome.onExit(markDead);
 
   const activeTab = () => tabs.get(activeTargetId) ?? null;
 
@@ -216,6 +218,7 @@ export const createBrowserRuntime = ({
     const current = tabs.get(targetId);
     if (!current) return;
     tabs.delete(targetId);
+    if (sharedProject) sharedProject.forget(targetId, scopeId);
     agentTargets.delete(targetId);
     sessions.delete(current.sessionId);
     clearTimeout(current.navigationTimer);
@@ -265,7 +268,11 @@ export const createBrowserRuntime = ({
 
   const handleTargetEvent = (event) => {
     const info = event.params.targetInfo;
-    if (event.method === 'Target.targetCreated' && isScopePage(info, contextId)) {
+    if (event.method === 'Target.targetCreated' && info?.type === 'page' && info.subtype !== 'prerender'
+      && (sharedProject
+        ? (sharedProject.owner(info.targetId) === scopeId || (info.openerId && sharedProject.owner(info.openerId) === scopeId))
+        : isScopePage(info, contextId))) {
+      if (sharedProject) sharedProject.claim(info.targetId, scopeId);
       // Pages the site opens (popups, target=_blank) come to the front like in a
       // browser; a tab the agent opened in the background stays behind.
       void attachTab(info.targetId, info.openerId ?? null)
@@ -340,15 +347,19 @@ export const createBrowserRuntime = ({
     let nextCdp = null;
     let nextContextId = null;
     try {
-      const [proxyAddress, processInfo] = await Promise.all([proxy.listen(), chrome.ensure()]);
+      const [proxyAddress, processInfo] = sharedProject
+        ? [null, await sharedProject.ensure()]
+        : await Promise.all([proxy.listen(), chrome.ensure()]);
       if (closed) throw new Error('Browser runtime is closed');
       nextCdp = await connectCdp(processInfo.endpoint);
-      const context = await nextCdp.send('Target.createBrowserContext', {
-        proxyServer: proxyAddress,
-        proxyBypassList: '<-loopback>',
-      });
-      if (typeof context.browserContextId !== 'string') throw new Error('Chrome returned no browser context id');
-      nextContextId = context.browserContextId;
+      if (!sharedProject) {
+        const context = await nextCdp.send('Target.createBrowserContext', {
+          proxyServer: proxyAddress,
+          proxyBypassList: '<-loopback>',
+        });
+        if (typeof context.browserContextId !== 'string') throw new Error('Chrome returned no browser context id');
+        nextContextId = context.browserContextId;
+      }
       if (closed) throw new Error('Browser runtime is closed');
       cdp = nextCdp;
       contextId = nextContextId;
@@ -367,7 +378,7 @@ export const createBrowserRuntime = ({
   const ensureStarted = async () => {
     if (closed) throw new Error('Browser runtime is closed');
     if (dead) throw dead;
-    if (cdp?.isOpen && contextId) return;
+    if (cdp?.isOpen && (sharedProject || contextId)) return;
     if (!startupPromise) startupPromise = start().catch((error) => {
       startupPromise = null;
       throw error;
@@ -381,9 +392,11 @@ export const createBrowserRuntime = ({
     // before it could bring the tab forward. Each tab gets its own window:
     // Chrome stops painting a tab that sits behind another in its window, and
     // a capture of it can then wait for a frame that never comes.
-    const creation = cdp.send('Target.createTarget', { url: 'about:blank', browserContextId: contextId, newWindow: true, background })
-      .then((target) => {
+    const creation = cdp.send('Target.createTarget', {
+      url: 'about:blank', ...(sharedProject ? {} : { browserContextId: contextId }), newWindow: true, background,
+    }).then((target) => {
         if (typeof target.targetId !== 'string') throw new Error('Chrome returned no page target id');
+        if (sharedProject) sharedProject.claim(target.targetId, scopeId);
         if (background) backgroundTargets.add(target.targetId);
         return target;
       });
@@ -617,7 +630,15 @@ export const createBrowserRuntime = ({
     // This Chrome serves this runtime alone, so nothing in it needs undoing.
     // Stopping it first keeps it from outliving a service the host is about to
     // kill, and fails the CDP calls that the work below may still wait on.
-    await chrome.close();
+    if (sharedProject) {
+      // Closing a chat must not stop another chat's Chrome. Close only this
+      // chat's tabs before relinquishing its project browser reference.
+      await Promise.allSettled([...tabs.keys()].map((targetId) =>
+        cdp?.isOpen ? cdp.send('Target.closeTarget', { targetId }) : Promise.resolve()));
+      for (const targetId of tabs.keys()) sharedProject.forget(targetId, scopeId);
+    } else {
+      await chrome.close();
+    }
     cdp?.close();
     await surface.close();
     inspector.close();
@@ -625,7 +646,12 @@ export const createBrowserRuntime = ({
     await actionQueue.catch(() => {});
     eventCleanup?.();
     for (const current of tabs.values()) clearTimeout(current.navigationTimer);
-    await proxy.close();
+    if (sharedProject) {
+      unsubscribeExit();
+      await sharedProject.release();
+    } else {
+      await proxy.close();
+    }
     contextId = null;
     tabs.clear();
     sessions.clear();
