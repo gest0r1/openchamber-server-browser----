@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { windowsChromeMajor } from '../src/chrome-process.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createChromeProcess, resolveChromePath, windowsChromeMajor } from '../src/chrome-process.js';
 
 // A VS_VERSIONINFO resource as chrome.exe carries it: lengths and type, the key,
 // padding to a 32-bit boundary, then VS_FIXEDFILEINFO.
@@ -29,3 +32,48 @@ test('reads Chrome\'s major version from a Windows executable', () => {
   assert.equal(windowsChromeMajor(Buffer.alloc(256)), null);
   assert.equal(windowsChromeMajor(versionResource(156, 0, 8078, 73).subarray(0, 50)), null);
 });
+
+let chromium = null;
+try { chromium = resolveChromePath(); } catch {}
+
+test('persistent profile ignores stale DevToolsActivePort and starts a fresh Chrome',
+  { skip: chromium ? false : 'Chromium unavailable' }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-chrome-stale-port-'));
+    const profileDir = path.join(root, 'persistent');
+    fs.mkdirSync(profileDir);
+    fs.writeFileSync(path.join(profileDir, 'DevToolsActivePort'),
+      '34711\\n/devtools/browser/no-longer-running\\n');
+    const browser = createChromeProcess({ chromePath: chromium, profileDir, startupTimeoutMs: 20000 });
+    try {
+      const info = await browser.ensure();
+      assert.notEqual(new URL(info.endpoint).port, '34711');
+      assert.equal(info.profileDir, profileDir);
+    } finally {
+      await browser.close();
+      assert.equal(fs.existsSync(profileDir), true, 'persistent profile must remain on disk');
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+test('a failed Chrome startup can be retried without restarting the service',
+  { skip: process.platform === 'win32' ? 'POSIX executable fixture' : false }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-chrome-retry-'));
+    const launcher = path.join(root, 'fake-chrome');
+    const marker = path.join(root, 'launch-count');
+    const profileDir = path.join(root, 'profile');
+    // --version is probed separately. Each real launch fails immediately.
+    fs.writeFileSync(launcher, `#!/bin/sh
+if [ "$1" = "--version" ]; then echo "Chromium 144.0.0.0"; exit 0; fi
+echo launched >> "${marker}"
+exit 9
+`, { mode: 0o700 });
+    const browser = createChromeProcess({ chromePath: launcher, profileDir, startupTimeoutMs: 5000 });
+    try {
+      await assert.rejects(browser.ensure(), /Chrome exited during startup/);
+      await assert.rejects(browser.ensure(), /Chrome exited during startup/);
+      assert.equal(fs.readFileSync(marker, 'utf8').trim().split('\\n').length, 2);
+    } finally {
+      await browser.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
