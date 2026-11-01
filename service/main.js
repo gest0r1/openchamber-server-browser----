@@ -3692,15 +3692,31 @@ var createProjectBrowsers = ({
           if (!pending) {
             pending = (async () => {
               const proxyAddress = await proxy.listen();
-              chrome = createChromeProcess({
+              const instance = createChromeProcess({
                 chromePath, profileDir,
                 proxyServer: proxyAddress,
               });
-              chrome.onExit((detail) => {
+              chrome = instance;
+              instance.onExit((detail) => {
+                if (chrome === instance) {
+                  chrome = null;
+                  pending = null;
+                }
+                // A browser crash invalidates all chat CDP connections and
+                // lets their manager retire the old scopes automatically.
                 for (const listener of entry.exitListeners) listener(detail);
               });
-              return chrome.ensure();
-            })();
+              return instance.ensure();
+            })().catch(async (error) => {
+              // Do not cache failed Chrome startups. Otherwise every later
+              // action reuses the rejected promise and the service can only
+              // recover after a manual restart.
+              const failed = chrome;
+              chrome = null;
+              pending = null;
+              await failed?.close().catch(() => {});
+              throw error;
+            });
           }
           return pending;
         },
@@ -5860,6 +5876,23 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3, profile
       profileDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "openchamber-server-browser-"));
       await fs.promises.chmod(profileDir, 448);
     }
+    const activePortPath = path.join(profileDir, "DevToolsActivePort");
+    if (persistentProfileDir) {
+      let oldEndpoint = null;
+      try { oldEndpoint = parseEndpoint(await fs.promises.readFile(activePortPath, "utf8")); } catch {}
+      if (oldEndpoint) {
+        let activeCdp = null;
+        try {
+          activeCdp = await connectCdp(oldEndpoint, { handshakeTimeoutMs: 1200 });
+        } catch {
+        }
+        if (activeCdp) {
+          activeCdp.close();
+          throw new Error("Chrome profile is already in use by another browser process");
+        }
+      }
+      await fs.promises.rm(activePortPath, { force: true });
+    }
     const userAgent = await userAgentArgs(binary);
     if (closed) throw new Error("Chrome launch was cancelled");
     child = spawn(binary, [
@@ -5891,11 +5924,15 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3, profile
     });
     child.once("exit", (code, signal) => {
       if (closed) return;
-      if (!result) exitError = new Error(`Chrome exited during startup (code ${code ?? "null"}, signal ${signal ?? "none"})`);
-      else for (const listener of exitListeners) listener({ code, signal });
+      if (!result) {
+        exitError = new Error(`Chrome exited during startup (code ${code ?? "null"}, signal ${signal ?? "none"})`);
+      } else {
+        result = null;
+        launchPromise = null;
+        for (const listener of exitListeners) listener({ code, signal });
+      }
     });
     const deadline = Date.now() + startupTimeoutMs;
-    const activePortPath = path.join(profileDir, "DevToolsActivePort");
     let endpoint = null;
     while (!endpoint && Date.now() < deadline) {
       if (closed) throw new Error("Chrome launch was cancelled");
@@ -5919,6 +5956,8 @@ var createChromeProcess = ({ chromePath = null, startupTimeoutMs = 15e3, profile
       if (!launchPromise) {
         launchPromise = launch().catch(async (error) => {
           killChild();
+          launchPromise = null;
+          result = null;
           await removeProfile();
           throw error;
         });
