@@ -4,6 +4,7 @@ import { createBrowserManager } from './browser-manager.js';
 import { createBrowserRuntime } from './browser-runtime.js';
 import { loadConfig } from './config.js';
 import { createDevServerScanner } from './dev-servers.js';
+import { createProjectBrowsers } from './project-browsers.js';
 import { createService } from './service.js';
 
 const readPort = (value) => {
@@ -28,8 +29,13 @@ export const startService = async ({
   const config = loadConfig({ entryUrl: import.meta.url, configPath });
   // One scanner serves every scope; it caches the listener table briefly.
   const devServers = config.discoverDevServers ? createDevServerScanner() : null;
+  const projects = runtime ? null : createProjectBrowsers({ ...config, devServers });
   const browserRuntime = runtime ?? createBrowserManager({
-    createRuntime: () => createBrowserRuntime({ ...config, devServers }),
+    createRuntime: (context) => createBrowserRuntime({
+      ...config,
+      sharedProject: projects.acquire(context),
+      scopeId: JSON.stringify([context.directory, context.sessionId]),
+    }),
   });
   const service = createService({
     runtime: browserRuntime,
